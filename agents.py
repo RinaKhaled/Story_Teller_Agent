@@ -7,10 +7,10 @@ from google import genai as google_genai
 from google.genai import types
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.graph.message import add_messages
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,10 +29,6 @@ class StoryState(TypedDict):
     prompt: str
     genre: str
     paragraphs: int
-    title: Optional[str]
-    story: Optional[str]
-    scenes: Optional[List[str]]
-    images: Optional[List[ImageData]]
 
 
 @tool
@@ -72,27 +68,28 @@ def render_images(scenes: List[str]) -> List[dict]:
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(aspect_ratio="16:9"),
                 ),
             )
-            data = resp.candidates[0].content.parts[0].inline_data.data
+            data = next(
+                p.inline_data.data for p in resp.candidates[0].content.parts if p.inline_data
+            )
             b64 = base64.b64encode(data).decode()
             images.append({"url": f"data:image/png;base64,{b64}", "caption": prompt[:80]})
         except Exception as e:
             print(f"[render_images] {prompt[:40]!r}: {e}")
-
     return images
 
 
-llm_with_tools = llm.bind_tools([write_story, render_images])
-
+llm_with_tools = llm.bind_tools([write_story, render_images], tool_choice="any")
 
 def orchestrator(state: StoryState) -> StoryState:
+    from langchain_core.messages import SystemMessage
     system = SystemMessage(content=(
-        "You are a story pipeline orchestrator. Given a user request, "
-        "you must first call write_story to generate the story, "
-        "then call render_images with the returned scenes to generate images. "
-        "Always call both tools in sequence."
+        "You are a story pipeline orchestrator. "
+        "You must ALWAYS respond by calling a tool, never with plain text. "
+        "If the story has not been written yet, call write_story. "
+        "If the story is written but images are not generated, call render_images with the scenes. "
+        "If both are done, you may stop."
     ))
     response = llm_with_tools.invoke([system] + state["messages"])
     return {"messages": [response]}
@@ -126,28 +123,3 @@ NODE_LABELS = {
     "story_writer": "Writing story...",
     "image_gen": "Generating images...",
 }
-
-
-def orchestra(prompt, genre, paragraphs, status=None) -> tuple[StoryState, Optional[str]]:
-    try:
-        state = None
-        initial_message = HumanMessage(
-            content=f"Write a {genre} story about: {prompt}. Use {paragraphs} paragraphs."
-        )
-        for event in pipeline.stream({
-            "messages": [initial_message],
-            "prompt": prompt,
-            "genre": genre,
-            "paragraphs": paragraphs,
-        }):
-            node = next(iter(event))
-            if status:
-                status.write(NODE_LABELS.get(node, node))
-            state = event[node]
-    except Exception as e:
-        return {}, str(e)
-
-    if status:
-        status.update(label="Done", state="complete")
-
-    return state, None
