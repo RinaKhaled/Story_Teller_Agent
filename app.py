@@ -1,7 +1,7 @@
 import json
 import streamlit as st
-from langchain_core.messages import ToolMessage
-from agents import orchestra
+from langchain_core.messages import HumanMessage, ToolMessage
+from agents import pipeline, NODE_LABELS
 
 st.set_page_config(page_title="Story Teller", page_icon="📖")
 st.title("Story Teller")
@@ -17,35 +17,38 @@ if st.button("Generate", type="primary"):
         st.warning("Enter a story idea first.")
         st.stop()
 
+    input_state = {
+        "messages": [HumanMessage(content=f"Write a {genre} story about: {prompt}. Use {paragraphs} paragraphs.")],
+        "prompt": prompt,
+        "genre": genre,
+        "paragraphs": paragraphs,
+    }
+
+    story_placeholder = st.empty()
+    images_placeholder = st.empty()
+
     with st.status("Running...", expanded=True) as status:
-        state, error = orchestra(prompt, genre, paragraphs, status)
+        for event in pipeline.stream(input_state):
+            node = next(iter(event))
+            state = event[node]
+            status.write(NODE_LABELS.get(node, node))
 
-    if error:
-        st.error(error)
-        st.stop()
+            if node == "story_writer":
+                for msg in state.get("messages", []):
+                    if isinstance(msg, ToolMessage):
+                        result = msg.content if isinstance(msg.content, dict) else json.loads(msg.content)
+                        with story_placeholder.container():
+                            st.subheader(result["title"])
+                            st.markdown(result["story"])
 
-    # extract tool results from messages
-    story_data, images = None, None
-    for msg in state.get("messages", []):
-        if isinstance(msg, ToolMessage):
-            try:
-                result = json.loads(msg.content)
-                if "story" in result:
-                    story_data = result
-                elif isinstance(result, list) and result and "url" in result[0]:
-                    images = result
-            except (json.JSONDecodeError, IndexError, KeyError):
-                continue
+            if node == "image_gen":
+                for msg in state.get("messages", []):
+                    if isinstance(msg, ToolMessage):
+                        images = msg.content if isinstance(msg.content, list) else json.loads(msg.content)
+                        with images_placeholder.container():
+                            st.divider()
+                            cols = st.columns(len(images))
+                            for col, img in zip(cols, images):
+                                col.image(img["url"], caption=img["caption"], use_container_width=True)
 
-    if not story_data:
-        st.error("No story was generated.")
-        st.stop()
-
-    st.subheader(story_data["title"])
-    st.markdown(story_data["story"])
-
-    if images:
-        st.divider()
-        cols = st.columns(len(images))
-        for col, img in zip(cols, images):
-            col.image(img["url"], caption=img["caption"], use_container_width=True)
+        status.update(label="Done", state="complete")
