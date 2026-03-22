@@ -76,7 +76,7 @@ def render_images(scenes: List[str]) -> List[dict]:
             b64 = base64.b64encode(data).decode()
             images.append({"url": f"data:image/png;base64,{b64}", "caption": prompt[:80]})
         except Exception as e:
-            print(f"[render_images] {prompt[:40]!r}: {e}")
+            raise RuntimeError(f"Image generation failed for {prompt[:40]!r}: {e}") from e
     return images
 
 
